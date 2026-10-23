@@ -427,6 +427,9 @@ def main():
                     return
                 name = called.getName()
                 if name not in seen and not _is_external(name):
+                    if depth >= MAX_DEPTH:
+                        DEPTH_LIMIT_REACHED = True
+                        continue
                     seen.add(name)
                     c = decompile_function(decomp, called)
                     if c:

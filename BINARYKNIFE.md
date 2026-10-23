@@ -10,6 +10,8 @@ Generic corrections in this fork:
 * Consume `DEEPZERO_MAX_FUNCTIONS` and `DEEPZERO_MAX_DEPTH` in dispatch extraction;
   count actual decompilation requests, including structural discovery. Preserve
   explicit limit flags and partial entry-only output.
+  Depth zero follows no internal callees; omitted callees remain explicit rather
+  than being decompiled one level beyond the requested boundary.
 * Limit Semgrep worker count and submit explicit staged files. On the tested
   Windows setup, directory-targeted scans stalled while explicit-file scans
   completed. The underlying Semgrep directory-discovery cause remains unknown.
