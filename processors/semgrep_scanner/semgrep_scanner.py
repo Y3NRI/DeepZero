@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from deepzero.engine.stage import (
     ProcessorEntry,
     ProcessorResult,
 )
+from deepzero.engine.process import _kill_process_tree
 
 
 class SemgrepScanner(BulkMapProcessor):
@@ -190,8 +192,16 @@ class SemgrepScanner(BulkMapProcessor):
             "--quiet",
             "--metrics=off",
             "--disable-version-check",
-            str(bulk_dir),
+            "--jobs",
+            str(self.config.get("jobs", 1 if sys.platform == "win32" else 2)),
         ]
+        # Explicit staged files avoid directory discovery outside the owned
+        # batch (Windows native directory traversal can stall in large repos).
+        cmd.extend(str(bulk_dir / name) for name in sorted(file_to_sample))
+        if sys.platform == "win32" and sum(len(arg) + 3 for arg in cmd) > 28000:
+            for idx, _ in uncached_entries:
+                results[idx] = ProcessorResult.fail("explicit scan target arguments exceed the Windows bound; reduce batch_size")
+            return
 
         self.log.info(
             "bulk scanning %d files from %d samples",
@@ -217,6 +227,7 @@ class SemgrepScanner(BulkMapProcessor):
                 results[idx] = ProcessorResult.fail(f"could not run semgrep: {exc}")
             return
         except asyncio.TimeoutError:
+            await _kill_process_tree(proc)
             for idx, _ in uncached_entries:
                 results[idx] = ProcessorResult.fail(f"semgrep batch timed out after {timeout}s")
             return

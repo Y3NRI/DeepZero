@@ -11,6 +11,12 @@ import re
 
 from ghidra.app.decompiler import DecompileOptions, DecompInterface
 
+MAX_FUNCTIONS = max(1, min(256, int(os.environ.get('DEEPZERO_MAX_FUNCTIONS', '60'))))
+MAX_DEPTH = max(0, min(8, int(os.environ.get('DEEPZERO_MAX_DEPTH', '4'))))
+DECOMPILE_CALLS = 0
+FUNCTION_LIMIT_REACHED = False
+DEPTH_LIMIT_REACHED = False
+
 
 def get_decompiler():
     """set up the decompiler interface"""
@@ -24,8 +30,13 @@ def get_decompiler():
 
 def decompile_function(decomp, func, timeout=120):
     """decompile a function and return the C string"""
+    global DECOMPILE_CALLS, FUNCTION_LIMIT_REACHED
+    if DECOMPILE_CALLS >= MAX_FUNCTIONS:
+        FUNCTION_LIMIT_REACHED = True
+        return ""
     if func is None:
         return ""
+    DECOMPILE_CALLS += 1
     result = decomp.decompileFunction(func, timeout, getMonitor())
     if result and result.decompileCompleted():
         return result.getDecompiledFunction().getC()
@@ -124,6 +135,7 @@ def find_dispatch_assignment(decomp, driver_entry=None):
     starts from DriverEntry and its direct callees before falling
     back to a full function scan, avoiding unnecessary decompilations."""
 
+    global FUNCTION_LIMIT_REACHED
     patterns = [
         # x64 raw offset pattern (handles &LAB_XXXX)
         r"\*\s*\([^)]*\+\s*0xe0\)\s*=\s*&?(\w+)",
@@ -177,6 +189,9 @@ def find_dispatch_assignment(decomp, driver_entry=None):
 
     # phase 2: fallback full scan if priority search failed
     for func in fm.getFunctions(True):
+        if DECOMPILE_CALLS >= MAX_FUNCTIONS:
+            FUNCTION_LIMIT_REACHED = True
+            break
         addr = func.getEntryPoint()
         if addr in seen_addrs:
             continue
@@ -373,6 +388,7 @@ def main():
 
     if not dispatch_func:
         result["error"] = "could not locate IRP_MJ_DEVICE_CONTROL handler"
+        result["partial"] = True
         result["success"] = True  # partial success, we still have DriverEntry
         write_result(output_dir, result)
         return
@@ -389,7 +405,7 @@ def main():
     # now collect all internal subfunctions called by the dispatch
     subfuncs_c = []
     seen = {dispatch_func.getName()}
-    max_subfuncs = 60
+    max_subfuncs = MAX_FUNCTIONS
 
     def _is_external(name):
         """skip known external api calls — follow everything else"""
@@ -399,7 +415,11 @@ def main():
         return name.startswith("_") and not name.startswith("FUN_")
 
     def get_subfuncs(func, depth=0):
-        if depth > 4 or len(subfuncs_c) >= max_subfuncs:
+        global DEPTH_LIMIT_REACHED
+        if depth > MAX_DEPTH:
+            DEPTH_LIMIT_REACHED = True
+            return
+        if len(subfuncs_c) >= max_subfuncs:
             return
         try:
             for called in func.getCalledFunctions(getMonitor()):
@@ -464,6 +484,10 @@ def main():
 
 def write_result(output_dir, result):
     # FIX: Use io.open with utf-8 and ensure_ascii=False for JSON dump
+    result['decompile_calls'] = DECOMPILE_CALLS
+    result['limits_reached'] = FUNCTION_LIMIT_REACHED or DEPTH_LIMIT_REACHED
+    result['decompile_limit'] = MAX_FUNCTIONS
+    result['depth_limit'] = MAX_DEPTH
     with io.open(os.path.join(output_dir, "ghidra_result.json"), "w", encoding="utf-8") as f:
         data = json.dumps(result, indent=2, default=str, ensure_ascii=False)
         f.write(unicode(data))
